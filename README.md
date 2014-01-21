@@ -1,4 +1,4 @@
-graphite-udp-backend
+statsd-graphite-udp-backend
 ====================
 
 graphite udp backend for statsd
