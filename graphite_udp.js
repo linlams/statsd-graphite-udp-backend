@@ -1,17 +1,18 @@
 /*jshint node:true, laxcomma:true */
 
 /*
- * Flush stats to graphite (http://graphite.wikidot.com/).
+ * Flush stats to graphite via udp (http://graphite.wikidot.com/).
  *
- * To enable this backend, include 'graphite' in the backends
+ * To enable this backend, include 'graphite_udp' in the backends
  * configuration array:
  *
- *   backends: ['graphite']
+ *   backends: ['graphite_udp']
  *
  * This backend supports the following config options:
  *
- *   graphiteHost: Hostname of graphite server.
- *   graphitePort: Port to contact graphite server at.
+ *   graphiteUDPHosts: array of objects with host and port properties.
+ *
+ *   Example: graphiteUDPHosts: [{host: "graphite.example.com", port: 2003}]
  */
 
 var dgram = require('dgram');
@@ -21,8 +22,7 @@ var l;
 
 var debug;
 var flushInterval;
-var graphiteHost;
-var graphitePort;
+var graphiteUDPHosts;
 var flush_counts;
 
 var maxUDPLength;
@@ -51,55 +51,58 @@ var post_stats = function graphite_post_stats(statArray) {
   var last_exception = graphiteStats.last_exception || 0;
   var flush_time = graphiteStats.flush_time || 0;
   var flush_length = graphiteStats.flush_length || 0;
-  if (graphiteHost) {
-    try {
-      var graphite = dgram.createSocket('udp4');
-      graphite.addListener('error', function(connectionException){
-        if (debug) {
-          l.log(connectionException);
-        }
-      });
-      var ts = Math.round(new Date().getTime() / 1000);
-      var ts_suffix = ' ' + ts;
-      var namespace = globalNamespace.concat(prefixStats).join(".");
-      statArray.push(namespace + '.graphiteStats.last_exception' + globalSuffix + last_exception + ts_suffix);
-      statArray.push(namespace + '.graphiteStats.last_flush'     + globalSuffix + last_flush     + ts_suffix);
-      statArray.push(namespace + '.graphiteStats.flush_time'     + globalSuffix + flush_time     + ts_suffix);
-      statArray.push(namespace + '.graphiteStats.flush_length'   + globalSuffix + flush_length   + ts_suffix);
-
-      var starttime = Date.now();
-
-      var flush_length = 0;
-      var statArray_length = statArray.length;
-      var bufferArray = [];
-      var bufferLength = 0;
-      for (var i = 0; i < statArray_length; i++) {
-        var stat = statArray[i];
-        if (bufferLength + stat.length > maxUDPLength) {
-          var message = new Buffer(bufferArray.join("\n") + "\n");
-          graphite.send(message, 0, message.length, graphitePort, graphiteHost);
-          flush_length += message.length;
-          bufferArray.length = 0;
-          bufferLength = 0;
-        }
-        bufferArray.push(stat);
-        bufferLength += stat.length;
-      }
-      if (bufferLength > 0) {
-        var message = new Buffer(bufferArray.join("\n") + "\n");
-        graphite.send(message, 0, message.length, graphitePort, graphiteHost);
-        flush_length += message.length;
-      }
-
-      graphiteStats.flush_time = (Date.now() - starttime);
-      graphiteStats.flush_length = flush_length;
-      graphiteStats.last_flush = Math.round(new Date().getTime() / 1000);
-    } catch(e){
+  try {
+    var socket = dgram.createSocket('udp4');
+    socket.addListener('error', function(connectionException){
       if (debug) {
-        l.log(e);
+        l.log(connectionException);
       }
-      graphiteStats.last_exception = Math.round(new Date().getTime() / 1000);
+    });
+    var ts = Math.round(new Date().getTime() / 1000);
+    var ts_suffix = ' ' + ts;
+    var namespace = globalNamespace.concat(prefixStats).join(".");
+    statArray.push(namespace + '.graphiteStats.last_exception' + globalSuffix + last_exception + ts_suffix);
+    statArray.push(namespace + '.graphiteStats.last_flush'     + globalSuffix + last_flush     + ts_suffix);
+    statArray.push(namespace + '.graphiteStats.flush_time'     + globalSuffix + flush_time     + ts_suffix);
+    statArray.push(namespace + '.graphiteStats.flush_length'   + globalSuffix + flush_length   + ts_suffix);
+
+    var starttime = Date.now();
+
+    var flush_length = 0;
+    var bufferArray = [];
+    var bufferLength = 0;
+    for (var statArray_idx in statArray) {
+      var stat = statArray[statArray_idx];
+      if (bufferLength + stat.length > maxUDPLength) {
+        for (var graphiteUDPHost_idx in graphiteUDPHosts) {
+          var graphiteUDPHost = graphiteUDPHosts[graphiteUDPHost_idx];
+          var message = new Buffer(bufferArray.join("\n") + "\n");
+          socket.send(message, 0, message.length, graphiteUDPHost.port, graphiteUDPHost.host);
+        }
+        flush_length += bufferLength;
+        bufferArray.length = 0;
+        bufferLength = 0;
+      }
+      bufferArray.push(stat);
+      bufferLength += stat.length + 1;
     }
+    if (bufferLength > 0) {
+      for (var graphiteUDPHost_idx in graphiteUDPHosts) {
+        var graphiteUDPHost = graphiteUDPHosts[graphiteUDPHost_idx];
+        var message = new Buffer(bufferArray.join("\n") + "\n");
+        socket.send(message, 0, message.length, graphiteUDPHost.port, graphiteUDPHost.host);
+      }
+      flush_length += bufferLength;
+    }
+
+    graphiteStats.flush_time = (Date.now() - starttime);
+    graphiteStats.flush_length = flush_length;
+    graphiteStats.last_flush = Math.round(new Date().getTime() / 1000);
+  } catch(e){
+    if (debug) {
+      l.log(e);
+    }
+    graphiteStats.last_exception = Math.round(new Date().getTime() / 1000);
   }
 };
 
@@ -200,8 +203,6 @@ var backend_status = function graphite_status(writeCb) {
 exports.init = function graphite_init(startup_time, config, events, logger) {
   debug = config.debug;
   l = logger;
-  graphiteHost = config.graphiteHost;
-  graphitePort = config.graphitePort;
   config.graphite = config.graphite || {};
   globalPrefix    = config.graphite.globalPrefix;
   prefixCounter   = config.graphite.prefixCounter;
@@ -262,6 +263,7 @@ exports.init = function graphite_init(startup_time, config, events, logger) {
 
   flush_counts = typeof(config.flush_counts) === "undefined" ? true : config.flush_counts;
 
+  graphiteUDPHosts = typeof(config.graphiteUDPHosts) === "undefined" ? [] : config.graphiteUDPHosts;
   maxUDPLength = typeof(config.maxUDPLength) === "undefined" ? 508 : config.maxUDPLength;
 
   events.on('flush', flush_stats);
