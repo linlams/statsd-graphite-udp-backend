@@ -46,18 +46,14 @@ var setsNamespace    = [];
 
 var graphiteStats = {};
 
+var socket;
+
 var post_stats = function graphite_post_stats(statArray) {
   var last_flush = graphiteStats.last_flush || 0;
   var last_exception = graphiteStats.last_exception || 0;
   var flush_time = graphiteStats.flush_time || 0;
   var flush_length = graphiteStats.flush_length || 0;
   try {
-    var socket = dgram.createSocket('udp4');
-    socket.addListener('error', function(connectionException){
-      if (debug) {
-        l.log(connectionException);
-      }
-    });
     var ts = Math.round(new Date().getTime() / 1000);
     var ts_suffix = ' ' + ts;
     var namespace = globalNamespace.concat(prefixStats).join(".");
@@ -266,6 +262,13 @@ exports.init = function graphite_init(startup_time, config, events, logger) {
   graphiteUDPHosts = typeof(config.graphiteUDPHosts) === "undefined" ? [] : config.graphiteUDPHosts;
   maxUDPLength = typeof(config.maxUDPLength) === "undefined" ? 508 : config.maxUDPLength;
 
+  socket = dgram.createSocket('udp4');
+  socket.addListener('error', function(connectionException){
+    if (debug) {
+      l.log(connectionException);
+    }
+  });
+  
   events.on('flush', flush_stats);
   events.on('status', backend_status);
 
